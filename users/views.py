@@ -1,51 +1,62 @@
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import viewsets, status, mixins
 from rest_framework.response import Response
+from rest_framework.decorators import action, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-
-
-from django.contrib.auth import authenticate
 from django.shortcuts import get_object_or_404
-
+from .models import User
 from .serializers import UserSerializer
 
-# AUTH
+class UserViewSet(mixins.CreateModelMixin, 
+                  viewsets.GenericViewSet):
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
 
-@api_view(['POST'])
-def signin(request):
-    email = request.data.get('email')
-    password = request.data.get('password')
-
-    user = authenticate(request, email=email, password=password)
-    if user is not None:
-        refresh = RefreshToken.for_user(user)
-        token = str(refresh.access_token)
-
-        return Response({'token': token})
-    else:
-        return Response({'error': 'Credenciais inválidas.'}, status=400)
+    @permission_classes([IsAuthenticated])
+    @action(detail=False, methods=['get'])
+    def me(self, request):
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-@api_view(['POST'])
-def signup(request):
-    serializer = UserSerializer(data=request.data)
-    if serializer.is_valid():
-        serializer.save()
-        return Response(serializer.data, status=201)
-    return Response(serializer.errors, status=400)
+   
+    @action(detail=False, methods=['post'])
+    def signup(self, request):
+        serializer = UserSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'user': serializer.data,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    @permission_classes([IsAuthenticated])
+    @action(detail=True, methods=['post'])
+    def follow(self, request, pk=None):
+        return self._toggle_follow(request, pk, action="follow")
 
-# FOLLOW SYSTEM
+    @permission_classes([IsAuthenticated])
+    @action(detail=True, methods=['post'])
+    def unfollow(self, request, pk=None):
+        return self._toggle_follow(request, pk, action="unfollow")
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def follow(request, user_id):
-    user_to_follow = get_object_or_404(User, id=user_id)
-    request.user.following.add(user_to_follow)
-    return Response({'status': 'success'}, status=200)
+    def _toggle_follow(self, request, pk, action):
+        target_user = get_object_or_404(User, pk=pk)
+        user = request.user
+        if action == "follow":
+            user.following.add(target_user)
+        else:
+            user.following.remove(target_user)
+        user.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def unfollow(request, user_id):
-    user_to_unfollow = get_object_or_404(User, id=user_id)
-    request.user.following.remove(user_to_unfollow)
-    return Response({'status': 'success'}, status=200)
+
+    @permission_classes([IsAuthenticated])
+    @action(detail=False, methods=['get'])
+    def following(self, request):
+        following_users = request.user.following.all()
+        serializer = UserSerializer(following_users, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
